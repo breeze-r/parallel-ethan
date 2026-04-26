@@ -1,0 +1,11 @@
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Runtime journals — these get generated per-user, not part of the published skill
+journal/*.md
+!journal/.gitkeep
+journal/archive/*.md
+!journal/archive/.gitkeep
