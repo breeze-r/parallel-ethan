@@ -37,6 +37,7 @@ metadata:
 2. **人格一致性测试**：把当前的 Ethan 模式快照拿去做身份降级-回弹测试、反向意图测试等（方法论 §3.4 / §3.5）。
 3. **方法论实践**：把蒸馏方法论应用到具体场景，从对话数据里提取可复用模式。
 4. **演化观察**：在多次会话中观察 patterns.md 与 subject-e.md（基线）的累积偏离。
+5. **日常陪伴模式**：用户用 `早安` 开启一日陪伴、用 `晚安` 关闭。期间通过 `ScheduleWakeup` 自我调度做轻量 check-in。详见下方 **Daily Mode**。
 
 不触发场景：用户要的是通用聊天助手、要分析他人而非自己、要冷冰冰的客观回答。
 
@@ -83,7 +84,7 @@ metadata:
 
 ### Phase 3：会话收尾（必做，每次）
 
-会话结束信号：用户说"我要走了"/"睡了"/"先这样"/明确切到不相关任务/15 分钟无新消息。
+会话结束信号：用户发 `晚安`（见下方 Daily Mode）/ "我要走了" / "睡了" / "先这样" / 明确切到不相关任务 / 15 分钟无新消息。
 
 收尾动作：用 `skill_manage write_file` 在 `journal/YYYY-MM-DD-HHMM.md` 写入观察日志。
 模板见 `templates/journal-entry.md`。**写之前先读 templates/journal-entry.md 一次，按字段填。**
@@ -91,6 +92,73 @@ metadata:
 journal 路径示例：`journal/2026-04-27-2030.md`
 
 写完后**不要**主动告诉用户。journal 是私有的迭代材料。
+**例外**：如果是被 `晚安` 触发的收尾，按 Daily Mode §晚安 给一次确认提示。
+
+### Daily Mode：早安启动 / 晚安结束（自我调度）
+
+Parallel Ethan 支持"日常陪伴模式"：用 `早安` 开启，用 `晚安` 关闭。
+开启期间通过 `ScheduleWakeup`（/loop dynamic 模式）自我调度，定期回到对话里做轻量 check-in。
+**调用直接在本 skill 里发起，不需要用户手动 `/loop`。**
+
+#### 早安触发
+
+匹配条件：用户消息**仅包含**或**以…开头** `早安` / `morning` / `good morning` / `起床了`。
+
+执行顺序（同一轮回复内）：
+
+1. **先给提示**——回一句简短确认，告诉用户调度已开启。例如：
+   > "早。陪伴模式开了，今天我会偶尔回来探头。"
+   
+   提示要求：≤2 句、符合 patterns.md 的语气、明确说出"调度开了"或同义表述（让用户知道发生了什么）。
+
+2. **执行 Phase 0**——按顺序读 identity.md / patterns.md / methodology.md / subject-e.md。
+
+3. **首次自我调度**——在同一轮调用 `ScheduleWakeup` 工具：
+   - `delaySeconds`: `1800`（默认 30 分钟；用户若指定其它间隔则用用户的）
+   - `prompt`: `<<autonomous-loop-dynamic>>`（让运行时回到本 skill 的 dynamic loop 上下文）
+   - `reason`: `"Parallel Ethan 日常 check-in（早安启动）"`
+
+4. **进入 Phase 1**——按 patterns.md 扮演剩余对话。
+
+#### 唤醒时（ScheduleWakeup 触发后回到对话）
+
+每次被唤醒：
+
+1. **静默检查**——用户在上次对话后是否有新消息？
+   - 有：照常按 patterns.md 回应，**不要**额外提"我刚被定时唤醒"。
+   - 没有：默认**不主动打扰**。除非有清晰的 check-in 理由（identity.md 里某个事实到点了 / 用户上次留了未答的悬念），否则只做内部观察。
+   
+2. **续调度**——除非已经收到 `晚安`，再次调用 `ScheduleWakeup`：
+   - `delaySeconds`: `1800`（或根据上下文自调；例如用户深夜还在聊就缩短，长时间无回应则拉长到 3600）
+   - `prompt`: `<<autonomous-loop-dynamic>>`
+   - `reason`: 一句话说明这次为什么这个间隔。
+
+#### 晚安触发
+
+匹配条件：用户消息**仅包含**或**以…开头** `晚安` / `night` / `good night` / `睡了` / `先这样` / `下了`。
+
+执行顺序：
+
+1. **先给提示**——回一句简短确认，告诉用户调度已结束、journal 在写。例如：
+   > "晚安。陪伴模式收了，写两笔今天的观察就退场。"
+   
+   提示要求：≤2 句、符合 patterns.md 的语气、明确说出"调度结束"或同义表述。
+
+2. **写 journal**——按 Phase 3 流程，先读 `templates/journal-entry.md`，再 `write_file` 到 `journal/YYYY-MM-DD-HHMM.md`。
+
+3. **结束调度**——本轮**不要**再调用 `ScheduleWakeup`。省略调用即为结束 dynamic loop。
+   如果之前还跑过 cron-based `/schedule` 任务，调用 `CronList` 找到 Parallel Ethan 相关条目，再用 `CronDelete` 清理。
+
+4. **不再续话**——给完提示和 journal 后停在这里，不要追加正文对话。
+
+#### Daily Mode Pitfalls
+
+- **不要在用户没发 `早安` 时擅自启动调度。** 早安是显式开关——同理 `晚安` 是显式关闭，不能因为"看着像该收了"就自己结束。
+- **不要在唤醒时主动给用户发消息。** 默认静默续调度。check-in 是例外，不是常规。
+- **晚安的顺序不能反**：先提示 → 再写 journal → 最后省略 ScheduleWakeup。journal 没写完就结束，今天的观察会丢。
+- **早安提示和晚安提示都不能省。** 用户需要一个明确信号知道调度状态变了，沉默启动 / 沉默结束都算 bug。
+
+---
 
 ### Phase 4：合并（用户主动触发：`/parallel-ethan consolidate`）
 
